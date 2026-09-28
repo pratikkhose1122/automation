@@ -1,0 +1,12 @@
+{
+  "name": "ipo-scraper-automation",
+  "version": "1.0.0",
+  "description": "Standalone headless Puppeteer scraper for IPO Premium.",
+  "main": "scrape-ipo.js",
+  "scripts": {
+    "start": "node scrape-ipo.js"
+  },
+  "dependencies": {
+    "puppeteer": "^22.6.0"
+  }
+}
