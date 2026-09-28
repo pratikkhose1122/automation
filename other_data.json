@@ -1,0 +1,50 @@
+{
+  "registrars": [
+    {
+      "name": "projects/ipo-trackit/databases/(default)/documents/registrars/bigshare",
+      "fields": { "supportsAutoCheck": { "booleanValue": true }, "isActive": { "booleanValue": true }, "lastVerified": { "timestampValue": "2026-01-26T18:30:00.595Z" }, "officialWebsite": { "stringValue": "https://www.bigshareonline.com" }, "requiresCaptcha": { "booleanValue": false }, "name": { "stringValue": "Bigshare" } }
+    },
+    {
+      "name": "projects/ipo-trackit/databases/(default)/documents/registrars/kfintech",
+      "fields": { "officialWebsite": { "stringValue": "https://ipostatus.kfintech.com/" }, "requiresCaptcha": { "booleanValue": false }, "name": { "stringValue": "Kfintech" }, "isActive": { "booleanValue": true }, "lastVerified": { "timestampValue": "2026-01-26T18:30:00.653Z" }, "supportsAutoCheck": { "booleanValue": true } }
+    },
+    {
+      "name": "projects/ipo-trackit/databases/(default)/documents/registrars/linkintime",
+      "fields": { "name": { "stringValue": "Link Intime" }, "lastVerified": { "timestampValue": "2026-01-26T18:30:00.095Z" }, "supportsAutoCheck": { "booleanValue": true }, "isActive": { "booleanValue": true }, "officialWebsite": { "stringValue": "https://linkintime.co.in" }, "requiresCaptcha": { "booleanValue": false } }
+    },
+    {
+      "name": "projects/ipo-trackit/databases/(default)/documents/registrars/masservices",
+      "fields": { "lastVerified": { "timestampValue": "2026-01-26T18:30:00.142Z" }, "requiresCaptcha": { "booleanValue": true }, "officialWebsite": { "stringValue": "https://www.masserv.com" }, "supportsAutoCheck": { "booleanValue": true }, "isActive": { "booleanValue": true }, "name": { "stringValue": "MAS Services" } }
+    }
+  ],
+  "app_config": [
+    {
+      "name": "projects/ipo-trackit/databases/(default)/documents/app_config/config",
+      "fields": { "autoIpoNotifications": { "booleanValue": false }, "enableOpenAlerts": { "booleanValue": true }, "enableAllotmentAlerts": { "booleanValue": true }, "updateMessage": { "stringValue": "New version available." }, "enableClosingAlerts": { "booleanValue": true }, "maintenanceEndTime": { "nullValue": null }, "latestVersion": { "stringValue": "1.0.3" }, "maintenanceMode": { "booleanValue": false }, "minRequiredVersion": { "stringValue": "1.0.2" }, "maintenanceMessage": { "nullValue": null }, "maintenanceStartTime": { "nullValue": null }, "forceUpdate": { "booleanValue": true }, "updatedBy": { "stringValue": "pratikkhose2@gmail.com" }, "updatedAt": { "timestampValue": "2026-07-05T12:27:22.390416Z" } }
+    },
+    {
+      "name": "projects/ipo-trackit/databases/(default)/documents/app_config/feature_flags",
+      "fields": { "autoIpoNotifications": { "booleanValue": false } }
+    },
+    {
+      "name": "projects/ipo-trackit/databases/(default)/documents/app_config/global",
+      "fields": { "forceUpdate": { "booleanValue": false }, "maintenanceMessage": { "stringValue": "App under maintenance. Please try later." }, "minRequiredVersion": { "stringValue": "1.0.0" }, "maintenanceMode": { "booleanValue": false }, "latestVersion": { "stringValue": "1.0.0" } }
+    },
+    {
+      "name": "projects/ipo-trackit/databases/(default)/documents/app_config/version_control",
+      "fields": { "latest_version_name": { "stringValue": "1.0.08" }, "force_update": { "booleanValue": false }, "update_message": { "stringValue": "A new version is available with important fixes." }, "updated_by": { "stringValue": "pratikkhose2@gmail.com" }, "latest_version_code": { "integerValue": "99" }, "playstore_url": { "stringValue": "https://play.google.com/store/apps/details?id=com.ipotrackit.app" }, "updated_at": { "timestampValue": "2026-03-21T10:04:19.310092Z" } }
+    }
+  ],
+  "announcements": [
+    {
+      "name": "projects/ipo-trackit/databases/(default)/documents/announcements/Z9yJg0pdVGgTtEENVv3k",
+      "fields": { "severity": { "stringValue": "info" }, "startDate": { "timestampValue": "2026-02-02T18:30:00Z" }, "endDate": { "timestampValue": "2026-02-04T18:30:00Z" }, "createdBy": { "stringValue": "pratikkhose2@gmail.com" }, "targetAppVersion": { "nullValue": null }, "message": { "stringValue": "XYZ" }, "title": { "stringValue": "New IPO out check it" }, "isActive": { "booleanValue": false }, "createdAt": { "timestampValue": "2026-01-30T10:50:51.183672Z" } }
+    }
+  ],
+  "feature_flags": [
+    {
+      "name": "projects/ipo-trackit/databases/(default)/documents/feature_flags/enable_auto_check",
+      "fields": { "scope": { "stringValue": "global" }, "lastModified": { "timestampValue": "2026-01-26T18:30:00.220Z" }, "enabled": { "booleanValue": true }, "description": { "stringValue": "Enable automatic allotment checking" } }
+    }
+  ]
+}
