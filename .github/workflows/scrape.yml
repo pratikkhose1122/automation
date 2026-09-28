@@ -2,8 +2,8 @@ name: Daily IPO Scraper
 
 on:
   schedule:
-    # Runs at 02:00 UTC every day (around 07:30 AM IST)
-    - cron: '0 2 * * *'
+    # Runs every 2 hours (e.g., 00:00, 02:00, 04:00 UTC) to keep GMP fresh
+    - cron: '0 */2 * * *'
   workflow_dispatch: # Allows manual triggering from the GitHub Actions UI
 
 jobs:
