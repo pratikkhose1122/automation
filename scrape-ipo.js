@@ -1,5 +1,7 @@
 require('dotenv').config();
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+puppeteer.use(StealthPlugin());
 const { createClient } = require('@supabase/supabase-js');
 
 // Initialize Supabase Client
@@ -8,10 +10,10 @@ const supabaseKey = process.env.SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 async function scrapeIPO() {
-    console.log("Starting headless browser...");
+    console.log("Starting headless browser with Stealth mode...");
     const browser = await puppeteer.launch({
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox'] 
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'] 
     });
     
     try {
