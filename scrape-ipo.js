@@ -192,8 +192,32 @@ async function scrapeIPO() {
                 }
 
                 // Use the company name as a unique ID
-                const companyName = ipo['COMPANY'] ? ipo['COMPANY'].split('\\n')[0].trim() : 'Unknown';
-                const id = companyName.toLowerCase().replace(/[^a-z0-9]/g, '-');
+                const rawCompanyName = ipo['COMPANY'] ? ipo['COMPANY'].replace(/\\n|\n/g, ' ').trim() : 'Unknown';
+                let cleanName = rawCompanyName.toLowerCase()
+                    .replace(/closing today/gi, '')
+                    .replace(/closes today/gi, '')
+                    .replace(/open today/gi, '')
+                    .replace(/new/gi, '')
+                    .replace(/ltd\.?/gi, '')
+                    .replace(/limited/gi, '')
+                    .replace(/mainboard/gi, '')
+                    .replace(/sme/gi, '')
+                    .replace(/bse/gi, '')
+                    .replace(/nse/gi, '')
+                    .replace(/[^a-z0-9]+/g, '-')
+                    .replace(/-+/g, '-')
+                    .replace(/^-|-$/g, '')
+                    .trim();
+
+                let exchangeSuffix = '-mainboard';
+                const lowerRaw = rawCompanyName.toLowerCase();
+                if (lowerRaw.includes('sme')) {
+                    const ex = lowerRaw.includes('nse') ? 'nse' : 'bse';
+                    exchangeSuffix = `-${ex}-sme`;
+                }
+
+                const id = `${cleanName}${exchangeSuffix}`;
+                const companyName = rawCompanyName.split('-')[0].replace(/(Closing|Open) Today/ig, '').trim();
                 
                 // Fetch existing row to preserve valid logo
                 let existingData = {};
