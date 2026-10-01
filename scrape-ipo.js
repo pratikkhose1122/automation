@@ -10,6 +10,16 @@ const supabaseKey = process.env.SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 async function scrapeIPO() {
+    console.log("Checking Auto-Publish Settings...");
+    let autoPublish = false;
+    try {
+        const { data: configRow } = await supabase.from('app_config').select('data').eq('id', 'config').maybeSingle();
+        if (configRow && configRow.data && configRow.data.autoPublishScrapedIpos === true) {
+            autoPublish = true;
+            console.log("Auto-Publish is ENABLED by Admin. New IPOs will be pushed immediately.");
+        }
+    } catch(e) {}
+
     console.log("Starting headless browser with Stealth mode...");
     const browser = await puppeteer.launch({
         headless: true,
@@ -210,6 +220,16 @@ async function scrapeIPO() {
                 if (ipo.detailed_info) {
                     ipo.detailed_info.logo_url = finalLogoUrl;
                 }
+                
+                const isNew = Object.keys(existingData).length === 0;
+                const shouldPublish = isNew ? autoPublish : (existingData.meta?.published || false);
+                
+                ipo.meta = {
+                    ...(existingData.meta || {}),
+                    status: existingData.meta?.status || (shouldPublish ? 'UPCOMING' : 'DRAFT'),
+                    published: shouldPublish,
+                    lastUpdated: new Date().toISOString()
+                };
                 
                 const { error } = await supabase
                     .from('ipos')
