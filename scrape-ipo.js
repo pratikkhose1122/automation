@@ -3,10 +3,11 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
 const { createClient } = require('@supabase/supabase-js');
+const { isFuzzyMatch } = require('./fuzzyMatch');
 
 // Initialize Supabase Client
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_ANON_KEY;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 async function scrapeIPO() {
@@ -219,15 +220,31 @@ async function scrapeIPO() {
                 const id = `${cleanName}${exchangeSuffix}`;
                 const companyName = rawCompanyName.split('-')[0].replace(/(Closing|Open) Today/ig, '').trim();
                 
-                // Fetch existing row to preserve valid logo
+                // Fetch existing row — with FUZZY DEDUP fallback
                 let existingData = {};
+                let resolvedId = id;
                 try {
-                    const { data: existingRow } = await supabase.from('ipos').select('data').eq('id', id).maybeSingle();
-                    if (existingRow && existingRow.data) {
-                        existingData = existingRow.data;
+                    // Step 1: Try exact ID match first (fast path)
+                    const { data: exactRow } = await supabase.from('ipos').select('id, data').eq('id', id).maybeSingle();
+                    if (exactRow && exactRow.data) {
+                        existingData = exactRow.data;
+                    } else {
+                        // Step 2: No exact match — fuzzy scan for renamed duplicates
+                        const { data: allRows } = await supabase.from('ipos').select('id, data');
+                        if (allRows) {
+                            for (const row of allRows) {
+                                const existingName = row.data?.basic?.name || row.data?.COMPANY || '';
+                                if (existingName && isFuzzyMatch(companyName, existingName)) {
+                                    console.log(`  🔗 Fuzzy match: "${companyName}" ≈ "${existingName}" (reusing id: ${row.id})`);
+                                    resolvedId = row.id;
+                                    existingData = row.data || {};
+                                    break;
+                                }
+                            }
+                        }
                     }
                 } catch (e) {
-                    console.error(`Warning: could not fetch existing row for logo preservation: ${e.message}`);
+                    console.error(`Warning: could not fetch existing row for dedup: ${e.message}`);
                 }
 
                 const existingLogoUrl = (existingData.basic && existingData.basic.logoUrl) || 
@@ -246,11 +263,18 @@ async function scrapeIPO() {
                 }
                 
                 const isNew = Object.keys(existingData).length === 0;
-                const shouldPublish = isNew ? autoPublish : (existingData.meta?.published || false);
+                const shouldPublish = autoPublish || (existingData.meta?.published || false);
+                
+                let finalStatus = existingData.meta?.status;
+                if (shouldPublish && (!finalStatus || finalStatus.toUpperCase() === 'DRAFT')) {
+                    finalStatus = 'UPCOMING';
+                } else if (!finalStatus) {
+                    finalStatus = 'DRAFT';
+                }
                 
                 ipo.meta = {
                     ...(existingData.meta || {}),
-                    status: existingData.meta?.status || (shouldPublish ? 'UPCOMING' : 'DRAFT'),
+                    status: finalStatus,
                     published: shouldPublish,
                     lastUpdated: new Date().toISOString()
                 };
@@ -258,7 +282,7 @@ async function scrapeIPO() {
                 const { error } = await supabase
                     .from('ipos')
                     .upsert({ 
-                        id: id, 
+                        id: resolvedId, 
                         data: ipo,
                         updated_at: new Date().toISOString()
                     });
