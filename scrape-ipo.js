@@ -25,7 +25,7 @@ function parsePrice(frontPrice, details) {
     if (/tba/i.test(raw) || !raw) {
         return { minPrice: 0, maxPrice: 0 };
     }
-    const rangeMatch = raw.match(/(\d+(?:\.\d+)?)\s*(?:to|-)\s*(\d+(?:\.\d+)?)/i);
+    const rangeMatch = raw.match(/(\d+(?:\.\d+)?)\s*(?:to|[–—\-])\s*(\d+(?:\.\d+)?)/i);
     if (rangeMatch) {
         return {
             minPrice: parseFloat(rangeMatch[1]) || 0,
@@ -75,50 +75,92 @@ function parseIssueSize(frontIssue, details) {
                 rawTotal = v;
             }
             if (/fresh issue/i.test(k) && v && !/tba/i.test(v)) {
-                const fm = String(v).replace(/₹|,/g, '').match(/(\d+(?:\.\d+)?)/);
-                if (fm) fresh = parseFloat(fm[1]) || 0;
+                const crMatch = String(v).replace(/,/g, '').match(/(\d+(?:\.\d+)?)\s*(?:cr|crore)/i);
+                if (crMatch) {
+                    fresh = parseFloat(crMatch[1]) || 0;
+                } else {
+                    const fm = String(v).replace(/₹|,/g, '').match(/(\d+(?:\.\d+)?)/);
+                    if (fm) {
+                        const val = parseFloat(fm[1]) || 0;
+                        if (val < 50000) fresh = val;
+                    }
+                }
             }
             if (/offer for sale|ofs/i.test(k) && v && !/tba/i.test(v)) {
-                const om = String(v).replace(/₹|,/g, '').match(/(\d+(?:\.\d+)?)/);
-                if (om) ofs = parseFloat(om[1]) || 0;
+                const crMatch = String(v).replace(/,/g, '').match(/(\d+(?:\.\d+)?)\s*(?:cr|crore)/i);
+                if (crMatch) {
+                    ofs = parseFloat(crMatch[1]) || 0;
+                } else {
+                    const om = String(v).replace(/₹|,/g, '').match(/(\d+(?:\.\d+)?)/);
+                    if (om) {
+                        const val = parseFloat(om[1]) || 0;
+                        if (val < 50000) ofs = val;
+                    }
+                }
             }
         }
     }
-    const tm = rawTotal.replace(/₹|,/g, '').match(/(\d+(?:\.\d+)?)/);
-    if (tm) total = parseFloat(tm[1]) || 0;
+    
+    // Total Issue parsing:
+    // 1. Prefer explicit Crore value (e.g., "₹8,981.12 Cr", "up to ₹455.72 Cr", "455.72 cr")
+    const crMatch = rawTotal.replace(/,/g, '').match(/(\d+(?:\.\d+)?)\s*(?:cr|crore)/i);
+    if (crMatch) {
+        total = parseFloat(crMatch[1]) || 0;
+    } else {
+        // 2. Check for Rupee prefix before a number (e.g., "₹455.72")
+        const rupeeMatch = rawTotal.replace(/,/g, '').match(/₹\s*(\d+(?:\.\d+)?)/);
+        if (rupeeMatch) {
+            const val = parseFloat(rupeeMatch[1]) || 0;
+            if (val < 50000) total = val;
+        } else {
+            // 3. General match, but guard against share count! (>50,000 is shares, not Crores)
+            const tm = rawTotal.replace(/₹|,/g, '').match(/(\d+(?:\.\d+)?)/);
+            if (tm) {
+                const val = parseFloat(tm[1]) || 0;
+                if (val < 50000) total = val;
+            }
+        }
+    }
     return { totalIssueCr: total, freshIssueCr: fresh, ofsCr: ofs };
 }
 
 function toISODate(dStr) {
     if (!dStr) return null;
-    const trimmed = cleanText(dStr);
+    let trimmed = cleanText(dStr);
     if (/tba/i.test(trimmed) || trimmed === '-' || trimmed === '--' || !trimmed) return null;
+    // Strip trailing status phrases like "Opens in 3 days", "Closes today", etc.
+    trimmed = trimmed.replace(/\b(opens|closes|closing|allotment|listing)\b.*$/i, '').trim();
     
-    const directDate = new Date(trimmed);
-    if (!isNaN(directDate.getTime()) && directDate.getFullYear() > 2000) {
-        return directDate.toISOString();
+    const currentYear = new Date().getFullYear();
+    const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+
+    // Only allow direct new Date() if an explicit 4-digit year >= 2024 is in the string!
+    // Without explicit year, new Date('Nov 19') defaults to year 2001 in V8/Node!
+    const yearMatch = trimmed.match(/\b(202\d)\b/);
+    if (yearMatch) {
+        const directDate = new Date(trimmed);
+        if (!isNaN(directDate.getTime()) && directDate.getFullYear() >= 2024) {
+            return directDate.toISOString();
+        }
     }
     
-    const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
-    const currentYear = new Date().getFullYear();
-    
-    const m1 = trimmed.match(/(\d{1,2})[\s\-]+([a-zA-Z]{3,9})(?:[\s\-]+(\d{4}))?/);
+    const m1 = trimmed.match(/(\d{1,2})[\s\-\/]+([a-zA-Z]{3,9})(?:[\s\-\/]+(\d{4}))?/);
     if (m1) {
         const day = parseInt(m1[1], 10);
         const mKey = m1[2].substring(0, 3).toLowerCase();
         const year = m1[3] ? parseInt(m1[3], 10) : currentYear;
-        if (months[mKey] !== undefined) {
+        if (months[mKey] !== undefined && day >= 1 && day <= 31) {
             const dt = new Date(Date.UTC(year, months[mKey], day));
             if (!isNaN(dt.getTime())) return dt.toISOString();
         }
     }
     
-    const m2 = trimmed.match(/([a-zA-Z]{3,9})[\s\-]+(\d{1,2})(?:,?\s+(\d{4}))?/);
+    const m2 = trimmed.match(/([a-zA-Z]{3,9})[\s\-\/]+(\d{1,2})(?:,?[\s\-\/]+(\d{4}))?/);
     if (m2) {
         const mKey = m2[1].substring(0, 3).toLowerCase();
         const day = parseInt(m2[2], 10);
         const year = m2[3] ? parseInt(m2[3], 10) : currentYear;
-        if (months[mKey] !== undefined) {
+        if (months[mKey] !== undefined && day >= 1 && day <= 31) {
             const dt = new Date(Date.UTC(year, months[mKey], day));
             if (!isNaN(dt.getTime())) return dt.toISOString();
         }
@@ -140,7 +182,7 @@ function parseDates(openCloseStr, details) {
     }
     
     if ((!open || !close) && openCloseStr) {
-        const parts = openCloseStr.split(/–|-|to/i).map(s => s.trim());
+        const parts = openCloseStr.split(/[–—\-]|\bto\b/i).map(s => s.trim());
         if (parts.length >= 2) {
             let pOpen = parts[0];
             let pClose = parts[1];
@@ -440,17 +482,29 @@ async function scrapeIPO() {
                     faceValue: scrapedFaceValue || existingData.pricing?.faceValue || 10,
                 };
 
-                // Dates: never wipe out verified dates
+                // Dates: never wipe out verified dates, and ensure valid year (>= 2024)
+                let finalOpen = scrapedDates.open || existingData.dates?.open || null;
+                let finalClose = scrapedDates.close || existingData.dates?.close || null;
+                if (finalOpen && new Date(finalOpen).getFullYear() < 2024) {
+                    finalOpen = new Date(new Date(finalOpen).setFullYear(new Date().getFullYear())).toISOString();
+                }
+                if (finalClose && new Date(finalClose).getFullYear() < 2024) {
+                    finalClose = new Date(new Date(finalClose).setFullYear(new Date().getFullYear())).toISOString();
+                }
                 const dates = {
-                    open: scrapedDates.open || existingData.dates?.open || null,
-                    close: scrapedDates.close || existingData.dates?.close || null,
+                    open: finalOpen,
+                    close: finalClose,
                     allotment: scrapedDates.allotment || existingData.dates?.allotment || null,
                     listing: scrapedDates.listing || existingData.dates?.listing || null,
                 };
 
-                // Issue: never wipe out verified issue sizes
+                // Issue: never wipe out verified issue sizes, and guard against raw share counts (>= 50,000)
+                let resolvedTotal = scrapedIssue.totalIssueCr || 0;
+                if (!resolvedTotal && existingData.issue?.totalIssueCr && existingData.issue.totalIssueCr < 50000) {
+                    resolvedTotal = existingData.issue.totalIssueCr;
+                }
                 const issue = {
-                    totalIssueCr: scrapedIssue.totalIssueCr || existingData.issue?.totalIssueCr || 0,
+                    totalIssueCr: resolvedTotal,
                     freshIssueCr: scrapedIssue.freshIssueCr || existingData.issue?.freshIssueCr || 0,
                     ofsCr: scrapedIssue.ofsCr || existingData.issue?.ofsCr || 0,
                     issueType: existingData.issue?.issueType || (isSME ? 'SME' : 'Book Built'),
@@ -536,6 +590,11 @@ async function scrapeIPO() {
                     finalStatus = 'UPCOMING';
                 } else if (!finalStatus) {
                     finalStatus = 'DRAFT';
+                }
+
+                // Guard: if open date is in future, status MUST be UPCOMING, never OPEN!
+                if (finalStatus === 'OPEN' && dates.open && new Date() < new Date(dates.open)) {
+                    finalStatus = 'UPCOMING';
                 }
 
                 const meta = {
