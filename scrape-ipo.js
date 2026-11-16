@@ -358,6 +358,38 @@ async function scrapeIPO() {
                                     }
                                 }
 
+                                // Check for Listing Debut Table: EXCHANGE, LISTED AT, GAIN, %
+                                if (headerCells.includes('EXCHANGE') && (headerCells.includes('LISTED AT') || headerCells.some(h => h.includes('LISTED')))) {
+                                    const listingData = {};
+                                    for (let r = 1; r < trs.length; r++) {
+                                        const cells = Array.from(trs[r].querySelectorAll('td')).map(c => c.innerText.trim());
+                                        if (cells.length < 2) continue;
+                                        const ex = cells[0].toUpperCase();
+                                        const listedAt = parseFloat(cells[1].replace(/[^\d.]/g, '')) || 0;
+                                        let gainPct = 0;
+                                        if (cells.length >= 4) {
+                                            gainPct = parseFloat(cells[3].replace(/[^\d.-]/g, '')) || 0;
+                                        } else if (cells.length >= 3) {
+                                            gainPct = parseFloat(cells[2].replace(/[^\d.-]/g, '')) || 0;
+                                        }
+
+                                        if (ex.includes('BSE')) {
+                                            listingData.listingPriceBse = listedAt;
+                                            listingData.listingGainBse = gainPct;
+                                        }
+                                        if (ex.includes('NSE')) {
+                                            listingData.listingPriceNse = listedAt;
+                                            listingData.listingGainNse = gainPct;
+                                        }
+                                        listingData.listedPrice = listedAt || listingData.listedPrice;
+                                        listingData.listingGainPercent = gainPct || listingData.listingGainPercent;
+                                        listingData.currentPriceExchange = ex.includes('BSE') ? 'BSE' : 'NSE';
+                                    }
+                                    if (listingData.listedPrice > 0) {
+                                        details['listingData'] = listingData;
+                                    }
+                                }
+
                                 // Key-value extraction for general details
                                 for (const row of trs) {
                                     const cells = Array.from(row.querySelectorAll('td, th')).map(c => c.innerText.trim());
@@ -612,10 +644,23 @@ async function scrapeIPO() {
                     history: newHistory,
                 };
 
-                // Basic
+                // Basic & Stock Exchange Symbols
+                let nseSymbol = existingData.basic?.nseSymbol || '';
+                let bseCode = existingData.basic?.bseCode || '';
+                if (ipo.detailed_info) {
+                    for (const [k, v] of Object.entries(ipo.detailed_info)) {
+                        if (/nse symbol/i.test(k) && v && !nseSymbol) nseSymbol = String(v).trim();
+                        if (/bse (scrip )?code/i.test(k) && v && !bseCode) bseCode = String(v).trim();
+                        if (/^symbol$/i.test(k) && v && !nseSymbol) nseSymbol = String(v).trim();
+                    }
+                }
+
                 const basic = {
                     ...(existingData.basic || {}),
                     name: existingData.basic?.name || companyName,
+                    symbol: existingData.basic?.symbol || nseSymbol || bseCode || (companyName.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toUpperCase()),
+                    nseSymbol: nseSymbol || existingData.basic?.nseSymbol || '',
+                    bseCode: bseCode || existingData.basic?.bseCode || '',
                     category: existingData.basic?.category || (isSME ? 'SME' : 'Mainboard'),
                     logoUrl: finalLogoUrl,
                     registrar: existingData.basic?.registrar || ipo.detailed_info?.['Registrar'] || null,
@@ -677,10 +722,21 @@ async function scrapeIPO() {
                     }
                 }
 
+                // Listing: capture debut prices from scraped listing table, preserve existing CMP & fields
+                const scrapedListing = ipo.detailed_info?.listingData;
+                const listing = {
+                    ...(existingData.listing || {}),
+                    ...(scrapedListing || {}),
+                };
+
                 // Final status & meta
                 const shouldPublish = autoPublish || (existingData.meta?.published || false);
                 let finalStatus = existingData.meta?.status;
-                if (shouldPublish && (!finalStatus || finalStatus.toUpperCase() === 'DRAFT')) {
+
+                // If debut listing price was captured from the exchange table, status is definitely LISTED!
+                if (scrapedListing && scrapedListing.listedPrice > 0) {
+                    finalStatus = 'LISTED';
+                } else if (shouldPublish && (!finalStatus || finalStatus.toUpperCase() === 'DRAFT')) {
                     finalStatus = 'UPCOMING';
                 } else if (!finalStatus) {
                     finalStatus = 'DRAFT';
@@ -700,7 +756,7 @@ async function scrapeIPO() {
 
                 // Complete canonical object merged with existingData and newly scraped fields
                 const finalData = {
-                    ...existingData,     // 1. Preserves existing fields (listing, subscription, etc.)
+                    ...existingData,     // 1. Preserves existing fields (subscription, etc.)
                     ...ipo,              // 2. Contains scraped fields
                     id: resolvedId,
                     basic,
@@ -711,6 +767,7 @@ async function scrapeIPO() {
                     gmp_history: newHistory,
                     reservation,
                     details,
+                    listing,
                     meta,
                     updated_at: nowIso
                 };
