@@ -301,6 +301,7 @@ async function scrapeIPO() {
                             const details = {};
                             let lotDistribution = null;
                             let reservationBreakdown = null;
+                            let subscriptionData = null;
                             
                             // 1. Scrape all standard tables (Lot Size, Financials, KPIs, Reservation)
                             const tables = Array.from(document.querySelectorAll('table'));
@@ -390,6 +391,85 @@ async function scrapeIPO() {
                                     }
                                 }
 
+                                // Check for Day-Wise Subscription Table: CATEGORY, DAY 1, DAY 2, ...
+                                if (headerCells.includes('CATEGORY') && headerCells.some(h => /DAY\s*1/i.test(h))) {
+                                    const dayCols = headerCells.slice(1);
+                                    const rows = [];
+                                    for (let r = 1; r < trs.length; r++) {
+                                        const cells = Array.from(trs[r].querySelectorAll('td')).map(c => c.innerText.trim());
+                                        if (cells.length < 2) continue;
+                                        const cat = cells[0];
+                                        const values = {};
+                                        dayCols.forEach((colName, cIdx) => {
+                                            const val = parseFloat(String(cells[cIdx + 1] || '').replace(/₹|,/g, '')) || 0;
+                                            values[colName] = val;
+                                        });
+                                        rows.push({ category: cat, ...values });
+                                    }
+                                    if (rows.length > 0) {
+                                        if (!subscriptionData) subscriptionData = {};
+                                        subscriptionData.dayWise = rows;
+                                    }
+                                }
+
+                                // Check for By Applications Table: CATEGORY, RESERVED, APPLIED, TIMES
+                                if (headerCells.includes('CATEGORY') && headerCells.includes('RESERVED') && (headerCells.includes('APPLIED') || headerCells.includes('APPLICATIONS'))) {
+                                    const appData = {};
+                                    for (let r = 1; r < trs.length; r++) {
+                                        const cells = Array.from(trs[r].querySelectorAll('td')).map(c => c.innerText.trim());
+                                        if (cells.length < 4) continue;
+                                        const catLower = cells[0].toLowerCase();
+                                        const reserved = parseInt(cells[1].replace(/[^\d]/g, ''), 10) || 0;
+                                        const applied = parseInt(cells[2].replace(/[^\d]/g, ''), 10) || 0;
+                                        const times = parseFloat(cells[3].replace(/[^\d.]/g, '')) || 0;
+
+                                        if (catLower.includes('10l+') || catLower.includes('bhni') || catLower.includes('big hni')) {
+                                            appData.bigHni = { reserved, applied, times };
+                                        } else if (catLower.includes('2-10l') || catLower.includes('3-10l') || catLower.includes('shni') || catLower.includes('small hni')) {
+                                            appData.smallHni = { reserved, applied, times };
+                                        } else if (catLower.includes('individual') || catLower.includes('retail')) {
+                                            appData.retail = { reserved, applied, times };
+                                        } else if (catLower.includes('employee')) {
+                                            appData.employee = { reserved, applied, times };
+                                        } else if (catLower.includes('shareholder')) {
+                                            appData.shareholder = { reserved, applied, times };
+                                        }
+                                    }
+                                    if (Object.keys(appData).length > 0) {
+                                        if (!subscriptionData) subscriptionData = {};
+                                        subscriptionData.byApplications = appData;
+                                    }
+                                }
+
+                                // Check for By Amount / Demand Table (₹ Crores) vs By Shares Table
+                                if (headerCells.includes('CATEGORY') && (headerCells.includes('OFFERED') || headerCells.some(h => h.includes('OFFERED'))) && (headerCells.includes('APPLIED') || headerCells.includes('DEMAND')) && headerCells.includes('TIMES')) {
+                                    const rows = [];
+                                    let hasFiiOrDii = false;
+                                    let isDecimalDemand = false;
+
+                                    for (let r = 1; r < trs.length; r++) {
+                                        const cells = Array.from(trs[r].querySelectorAll('td')).map(c => c.innerText.trim());
+                                        if (cells.length < 4) continue;
+                                        const cat = cells[0];
+                                        const offered = parseFloat(cells[1].replace(/₹|,/g, '')) || 0;
+                                        const appliedOrDemand = parseFloat(cells[2].replace(/₹|,/g, '')) || 0;
+                                        const times = parseFloat(cells[3].replace(/[^\d.]/g, '')) || 0;
+
+                                        if (/fii|dii|mutual|bank|dfi/i.test(cat)) hasFiiOrDii = true;
+                                        if (cells[2].includes('.') && appliedOrDemand < 50000) isDecimalDemand = true;
+
+                                        rows.push({ category: cat, offered, appliedOrDemand, times });
+                                    }
+
+                                    if (hasFiiOrDii || isDecimalDemand || headerCells.includes('DEMAND')) {
+                                        if (!subscriptionData) subscriptionData = {};
+                                        subscriptionData.byAmount = { rows };
+                                    } else {
+                                        if (!subscriptionData) subscriptionData = {};
+                                        subscriptionData.byShares = { rows };
+                                    }
+                                }
+
                                 // Key-value extraction for general details
                                 for (const row of trs) {
                                     const cells = Array.from(row.querySelectorAll('td, th')).map(c => c.innerText.trim());
@@ -475,6 +555,7 @@ async function scrapeIPO() {
                             details["logo_url"] = logoUrl;
                             details["lotDistribution"] = lotDistribution;
                             details["reservationBreakdown"] = reservationBreakdown;
+                            details["subscriptionData"] = subscriptionData;
                             
                             return details;
                         });
@@ -754,9 +835,75 @@ async function scrapeIPO() {
                     lastUpdated: nowIso
                 };
 
+                // Subscription: preserve existing flat values and add rich breakdown if newly scraped
+                let subscription = existingData.subscription || {
+                    retail: 0,
+                    hni: 0,
+                    qib: 0,
+                    total: 0
+                };
+
+                const scrapedSub = ipo.detailed_info?.subscriptionData;
+                if (scrapedSub) {
+                    // Update flat summary numbers from byShares if present
+                    if (scrapedSub.byShares?.rows?.length > 0) {
+                        const rows = scrapedSub.byShares.rows;
+                        const findRow = (keywords) => rows.find(r => keywords.some(k => r.category.toLowerCase().includes(k.toLowerCase())));
+                        const qibRow = findRow(['qib']);
+                        const hniRow = findRow(['hni', 'nii']);
+                        const retailRow = findRow(['retail', 'individual']);
+                        const totalRow = findRow(['total']);
+
+                        subscription = {
+                            ...subscription,
+                            retail: retailRow ? retailRow.times : (subscription.retail || 0),
+                            hni: hniRow ? hniRow.times : (subscription.hni || 0),
+                            qib: qibRow ? qibRow.times : (subscription.qib || 0),
+                            total: totalRow ? totalRow.times : (subscription.total || 0),
+                        };
+                    }
+
+                    // Compute Allotment Chances
+                    let allotmentChances = null;
+                    if (scrapedSub.byApplications) {
+                        const app = scrapedSub.byApplications;
+                        const formatChance = (times) => {
+                            if (!times || times <= 0) return { text: 'N/A', ratio: 0, percent: 0, isGuaranteed: false };
+                            if (times <= 1.0) {
+                                return { text: '100% Guaranteed', ratio: 1, percent: 100, isGuaranteed: true };
+                            }
+                            const ratio = Math.round(times);
+                            const percent = Number(((1 / times) * 100).toFixed(2));
+                            return {
+                                text: `1 out of ${ratio}`,
+                                ratio: ratio,
+                                percent: percent,
+                                isGuaranteed: false
+                            };
+                        };
+
+                        allotmentChances = {
+                            retail: formatChance(app.retail?.times || (app.retail?.reserved ? app.retail.applied / app.retail.reserved : 0)),
+                            smallHni: formatChance(app.smallHni?.times || (app.smallHni?.reserved ? app.smallHni.applied / app.smallHni.reserved : 0)),
+                            bigHni: formatChance(app.bigHni?.times || (app.bigHni?.reserved ? app.bigHni.applied / app.bigHni.reserved : 0))
+                        };
+                    }
+
+                    subscription = {
+                        ...subscription,
+                        ...(scrapedSub.byApplications ? { byApplications: scrapedSub.byApplications } : {}),
+                        ...(scrapedSub.byAmount ? { byAmount: scrapedSub.byAmount } : {}),
+                        ...(scrapedSub.byShares ? { byShares: scrapedSub.byShares } : {}),
+                        ...(scrapedSub.dayWise ? { dayWise: scrapedSub.dayWise } : {}),
+                        ...(allotmentChances ? { allotmentChances } : {}),
+                        lastUpdated: nowIso,
+                        source: 'NSE/BSE'
+                    };
+                }
+
                 // Complete canonical object merged with existingData and newly scraped fields
                 const finalData = {
-                    ...existingData,     // 1. Preserves existing fields (subscription, etc.)
+                    ...existingData,     // 1. Preserves existing fields
                     ...ipo,              // 2. Contains scraped fields
                     id: resolvedId,
                     basic,
@@ -768,6 +915,7 @@ async function scrapeIPO() {
                     reservation,
                     details,
                     listing,
+                    subscription,
                     meta,
                     updated_at: nowIso
                 };
