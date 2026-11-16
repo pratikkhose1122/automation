@@ -299,12 +299,67 @@ async function scrapeIPO() {
                         // Extract all tables and content from the detail page
                         const detailData = await page.evaluate(() => {
                             const details = {};
+                            let lotDistribution = null;
+                            let reservationBreakdown = null;
                             
-                            // 1. Scrape all standard tables (Lot Size, Financials, KPIs)
+                            // 1. Scrape all standard tables (Lot Size, Financials, KPIs, Reservation)
                             const tables = Array.from(document.querySelectorAll('table'));
                             for (const table of tables) {
-                                const rows = Array.from(table.querySelectorAll('tr'));
-                                for (const row of rows) {
+                                const trs = Array.from(table.querySelectorAll('tr'));
+                                if (trs.length === 0) continue;
+                                const headerCells = Array.from(trs[0].querySelectorAll('th, td')).map(c => c.innerText.trim().toUpperCase());
+
+                                // Check for Lot Distribution Table: CATEGORY, LOTS, SHARES, AMOUNT, RESERVED
+                                if (headerCells.includes('CATEGORY') && headerCells.includes('SHARES') && (headerCells.includes('AMOUNT') || headerCells.includes('RESERVED'))) {
+                                    const dist = {};
+                                    for (let r = 1; r < trs.length; r++) {
+                                        const cells = Array.from(trs[r].querySelectorAll('td')).map(c => c.innerText.trim());
+                                        if (cells.length < 5) continue;
+                                        const cat = cells[0].toLowerCase();
+                                        const shares = parseInt(cells[2].replace(/[^\d]/g, ''), 10) || 0;
+                                        const amt = parseInt(cells[3].replace(/[^\d]/g, ''), 10) || 0;
+                                        const apps = parseInt(cells[4].replace(/[^\d]/g, ''), 10) || 0;
+
+                                        if (cat.includes('retail')) {
+                                            dist.retailMinShare = shares;
+                                            dist.retailMinAmt = amt;
+                                            dist.retailApplications = apps;
+                                        } else if (cat.includes('shni') || cat.includes('s-hni') || cat.includes('small hni')) {
+                                            dist.sHniMinShare = shares;
+                                            dist.sHniMinAmt = amt;
+                                            dist.sHniApplications = apps;
+                                        } else if (cat.includes('bhni') || cat.includes('b-hni') || cat.includes('big hni')) {
+                                            dist.bHniMinShare = shares;
+                                            dist.bHniMinAmt = amt;
+                                            dist.bHniApplications = apps;
+                                        }
+                                    }
+                                    if (Object.keys(dist).length > 0) {
+                                        lotDistribution = dist;
+                                    }
+                                }
+
+                                // Check for Reservation Breakdown Table: CATEGORY, SHARES OFFERED, SHARE / %
+                                if (headerCells.includes('CATEGORY') && (headerCells.includes('SHARES OFFERED') || headerCells.some(h => h.includes('SHARES'))) && (headerCells.includes('SHARE') || headerCells.some(h => h.includes('%')))) {
+                                    const rows = [];
+                                    for (let r = 1; r < trs.length; r++) {
+                                        const cells = Array.from(trs[r].querySelectorAll('td')).map(c => c.innerText.trim());
+                                        if (cells.length < 3) continue;
+                                        const cat = cells[0].trim();
+                                        const shares = parseInt(cells[1].replace(/[^\d]/g, ''), 10) || 0;
+                                        const pctStr = cells[2].replace(/[^\d.]/g, '');
+                                        const pct = parseFloat(pctStr) || 0;
+                                        if (cat) {
+                                            rows.push({ category: cat, shares: shares, percent: pct });
+                                        }
+                                    }
+                                    if (rows.length > 0) {
+                                        reservationBreakdown = rows;
+                                    }
+                                }
+
+                                // Key-value extraction for general details
+                                for (const row of trs) {
                                     const cells = Array.from(row.querySelectorAll('td, th')).map(c => c.innerText.trim());
                                     if (cells.length >= 2) {
                                         details[cells[0]] = cells[1];
@@ -386,6 +441,8 @@ async function scrapeIPO() {
                                 }
                             }
                             details["logo_url"] = logoUrl;
+                            details["lotDistribution"] = lotDistribution;
+                            details["reservationBreakdown"] = reservationBreakdown;
                             
                             return details;
                         });
@@ -564,13 +621,44 @@ async function scrapeIPO() {
                     registrar: existingData.basic?.registrar || ipo.detailed_info?.['Registrar'] || null,
                 };
 
-                // Reservation: NEVER discard existing breakdown or quotas!
-                const reservation = existingData.reservation || {
+                // Reservation: populate from newly scraped breakdown if available, else preserve existing
+                let reservation = existingData.reservation || {
                     retail: 35,
                     hni: 15,
                     qib: 50,
                     breakdown: []
                 };
+
+                const scrapedBreakdown = ipo.detailed_info?.reservationBreakdown;
+                if (Array.isArray(scrapedBreakdown) && scrapedBreakdown.length > 0) {
+                    const findCat = (keywords) => scrapedBreakdown.find(r => keywords.some(k => r.category.toLowerCase().includes(k.toLowerCase())));
+
+                    const qibRow = findCat(['qib']);
+                    const hniRow = findCat(['hni', 'nii']);
+                    const retailRow = findCat(['retail']);
+                    const shRow = findCat(['shareholder', 'share holder']);
+                    const empRow = findCat(['employee']);
+                    const anchorRow = findCat(['anchor']);
+                    const totalRow = findCat(['total']);
+
+                    reservation = {
+                        ...(existingData.reservation || {}),
+                        qib: qibRow ? qibRow.percent : (existingData.reservation?.qib || 50),
+                        hni: hniRow ? hniRow.percent : (existingData.reservation?.hni || 15),
+                        retail: retailRow ? retailRow.percent : (existingData.reservation?.retail || 35),
+                        shareholder: shRow ? shRow.percent : (existingData.reservation?.shareholder || null),
+                        employee: empRow ? empRow.percent : (existingData.reservation?.employee || null),
+                        anchor: anchorRow ? anchorRow.percent : (existingData.reservation?.anchor || null),
+                        qibShares: qibRow ? qibRow.shares : (existingData.reservation?.qibShares || 0),
+                        hniShares: hniRow ? hniRow.shares : (existingData.reservation?.hniShares || 0),
+                        retailShares: retailRow ? retailRow.shares : (existingData.reservation?.retailShares || 0),
+                        shareholderShares: shRow ? shRow.shares : (existingData.reservation?.shareholderShares || 0),
+                        employeeShares: empRow ? empRow.shares : (existingData.reservation?.employeeShares || 0),
+                        anchorShares: anchorRow ? anchorRow.shares : (existingData.reservation?.anchorShares || 0),
+                        totalShares: totalRow ? totalRow.shares : (existingData.reservation?.totalShares || 0),
+                        breakdown: scrapedBreakdown
+                    };
+                }
 
                 // Details & Lot Distribution: NEVER discard existing details!
                 const details = {
@@ -581,6 +669,12 @@ async function scrapeIPO() {
                     if (ipo.detailed_info['About the Company']) details.about = ipo.detailed_info['About the Company'];
                     if (ipo.detailed_info['Strengths']) details.strengths = ipo.detailed_info['Strengths'];
                     if (ipo.detailed_info['Risk Factors']) details.risks = ipo.detailed_info['Risk Factors'];
+                    if (ipo.detailed_info.lotDistribution) {
+                        details.lotDistribution = {
+                            ...(details.lotDistribution || {}),
+                            ...ipo.detailed_info.lotDistribution
+                        };
+                    }
                 }
 
                 // Final status & meta
