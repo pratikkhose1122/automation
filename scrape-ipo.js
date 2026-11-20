@@ -234,6 +234,18 @@ async function scrapeIPO() {
         }
     } catch(e) {}
 
+    console.log("Fetching existing Supabase records for deduplication and subscription preservation...");
+    let allSupabaseRows = [];
+    try {
+        const { data: rows, error: rowsErr } = await supabase.from('ipos').select('id, data');
+        if (!rowsErr && rows) {
+            allSupabaseRows = rows;
+            console.log(`Fetched ${allSupabaseRows.length} existing records from Supabase.`);
+        }
+    } catch(e) {
+        console.warn("Could not pre-fetch Supabase rows:", e.message);
+    }
+
     console.log("Starting headless browser with Stealth mode...");
     const browser = await puppeteer.launch({
         headless: true,
@@ -603,31 +615,28 @@ async function scrapeIPO() {
                 const id = `${cleanName}${exchangeSuffix}`;
                 const companyName = rawCompanyName.split('-')[0].replace(/(Closing|Open) Today/ig, '').trim();
                 
-                // Fetch existing row — with FUZZY DEDUP fallback
+                // Fetch existing row — with FUZZY DEDUP fallback using pre-fetched cache
                 let existingData = {};
                 let resolvedId = id;
                 try {
-                    // Step 1: Try exact ID match first (fast path)
-                    const { data: exactRow } = await supabase.from('ipos').select('id, data').eq('id', id).maybeSingle();
+                    // Step 1: Try exact ID match first
+                    const exactRow = allSupabaseRows.find(r => r.id === id);
                     if (exactRow && exactRow.data) {
                         existingData = exactRow.data;
                     } else {
-                        // Step 2: No exact match — fuzzy scan for renamed duplicates
-                        const { data: allRows } = await supabase.from('ipos').select('id, data');
-                        if (allRows) {
-                            for (const row of allRows) {
-                                const existingName = row.data?.basic?.name || row.data?.COMPANY || '';
-                                if (existingName && isFuzzyMatch(companyName, existingName)) {
-                                    console.log(`  🔗 Fuzzy match: "${companyName}" ≈ "${existingName}" (reusing id: ${row.id})`);
-                                    resolvedId = row.id;
-                                    existingData = row.data || {};
-                                    break;
-                                }
+                        // Step 2: Fuzzy scan for renamed duplicates
+                        for (const row of allSupabaseRows) {
+                            const existingName = row.data?.basic?.name || row.data?.COMPANY || '';
+                            if (existingName && isFuzzyMatch(companyName, existingName)) {
+                                console.log(`  🔗 Fuzzy match: "${companyName}" ≈ "${existingName}" (reusing id: ${row.id})`);
+                                resolvedId = row.id;
+                                existingData = row.data || {};
+                                break;
                             }
                         }
                     }
                 } catch (e) {
-                    console.error(`Warning: could not fetch existing row for dedup: ${e.message}`);
+                    console.error(`Warning: could not resolve existing row for dedup: ${e.message}`);
                 }
 
                 const existingLogoUrl = (existingData.basic && existingData.basic.logoUrl) || 
@@ -856,10 +865,10 @@ async function scrapeIPO() {
 
                         subscription = {
                             ...subscription,
-                            retail: retailRow ? retailRow.times : (subscription.retail || 0),
-                            hni: hniRow ? hniRow.times : (subscription.hni || 0),
-                            qib: qibRow ? qibRow.times : (subscription.qib || 0),
-                            total: totalRow ? totalRow.times : (subscription.total || 0),
+                            retail: (retailRow && retailRow.times > 0) ? retailRow.times : (subscription.retail || 0),
+                            hni: (hniRow && hniRow.times > 0) ? hniRow.times : (subscription.hni || 0),
+                            qib: (qibRow && qibRow.times > 0) ? qibRow.times : (subscription.qib || 0),
+                            total: (totalRow && totalRow.times > 0) ? totalRow.times : (subscription.total || 0),
                         };
                     }
 
@@ -942,6 +951,15 @@ async function scrapeIPO() {
     } finally {
         console.log("Closing browser...");
         await browser.close();
+    }
+
+    // Automatically synchronize live subscription & allotment chances
+    try {
+        console.log("\n[MainScraper] Automatically triggering live subscription sync...");
+        const { syncLiveSubscription } = require('./sync-live-subscription');
+        await syncLiveSubscription();
+    } catch (subErr) {
+        console.error("[MainScraper] Failed to auto-sync live subscription:", subErr.message);
     }
 }
 
