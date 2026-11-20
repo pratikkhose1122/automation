@@ -3,6 +3,7 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
 const { createClient } = require('@supabase/supabase-js');
+const { cleanName, isFuzzyMatch } = require('./fuzzyMatch');
 
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jhoyxtwvkbjbqkdypqcu.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
@@ -45,40 +46,8 @@ function computeAllotmentChances(byApplications) {
     };
 }
 
-async function syncLiveSubscription() {
-    console.log('[LiveSub] Starting targeted live subscription sync...');
-    const now = new Date();
-    const nowIso = now.toISOString();
-
-    // 1. Fetch currently OPEN or recently active candidate IPOs
-    const { data: rows, error } = await supabase.from('ipos').select('id, data');
-    if (error) {
-        console.error('[LiveSub] Supabase fetch error:', error);
-        return;
-    }
-
-    const activeIpos = rows.filter(r => {
-        const d = r.data || {};
-        const meta = d.meta || {};
-        const dates = d.dates || {};
-        if (meta.published === false) return false;
-        const status = String(meta.status || '').toUpperCase();
-        if (status === 'OPEN') return true;
-        if (dates.open && dates.close) {
-            const o = new Date(dates.open);
-            const c = new Date(dates.close);
-            c.setHours(23, 59, 59, 999);
-            if (now >= o && now <= c) return true;
-        }
-        return false;
-    });
-
-    console.log(`[LiveSub] Found ${activeIpos.length} active open IPO(s) for live subscription.`);
-    if (activeIpos.length === 0) {
-        console.log('[LiveSub] No open IPOs found at this time. Exiting.');
-        return;
-    }
-
+async function scrapeSubscriptionPage() {
+    console.log('[LiveSub] Launching browser to scrape https://www.ipopremium.in/view/subscription ...');
     const browser = await puppeteer.launch({
         headless: 'new',
         args: ['--no-sandbox', '--disable-setuid-sandbox']
@@ -87,172 +56,264 @@ async function syncLiveSubscription() {
     try {
         const page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+        await page.goto('https://www.ipopremium.in/view/subscription', { waitUntil: 'networkidle2', timeout: 35000 });
 
-        for (const ipoRecord of activeIpos) {
-            const ipoData = ipoRecord.data || {};
-            const detailUrl = ipoData.detail_url;
-            const name = ipoData.basic?.name || ipoRecord.id;
+        const cardsData = await page.evaluate(() => {
+            const headings = Array.from(document.querySelectorAll('h4')).filter(h => h.innerText.trim());
+            const results = [];
 
-            if (!detailUrl) {
-                console.log(`[LiveSub] Skipping ${name} (no detail_url)`);
-                continue;
-            }
-
-            console.log(`[LiveSub] Syncing live bidding for ${name} from ${detailUrl}...`);
-            try {
-                await page.goto(detailUrl, { waitUntil: 'networkidle2', timeout: 30000 });
-
-                const scrapedSub = await page.evaluate(() => {
-                    const tables = Array.from(document.querySelectorAll('table'));
-                    let byShares = null;
-                    let byApplications = null;
-                    let byAmount = null;
-                    let dayWise = null;
-
-                    for (const t of tables) {
-                        const trs = Array.from(t.querySelectorAll('tr'));
-                        if (trs.length < 2) continue;
-                        const headerCells = Array.from(trs[0].querySelectorAll('th, td')).map(c => c.innerText.trim().toUpperCase());
-
-                        // Day-Wise Table
-                        if (headerCells.includes('CATEGORY') && headerCells.some(h => /DAY\s*1/i.test(h))) {
-                            const dayCols = headerCells.slice(1);
-                            const rows = [];
-                            for (let r = 1; r < trs.length; r++) {
-                                const cells = Array.from(trs[r].querySelectorAll('td')).map(c => c.innerText.trim());
-                                if (cells.length < 2) continue;
-                                const cat = cells[0];
-                                const values = {};
-                                dayCols.forEach((colName, cIdx) => {
-                                    const val = parseFloat(String(cells[cIdx + 1] || '').replace(/₹|,/g, '')) || 0;
-                                    values[colName] = val;
-                                });
-                                rows.push({ category: cat, ...values });
-                            }
-                            if (rows.length > 0) dayWise = rows;
-                        }
-
-                        // By Applications Table
-                        if (headerCells.includes('CATEGORY') && headerCells.includes('RESERVED') && (headerCells.includes('APPLIED') || headerCells.includes('APPLICATIONS'))) {
-                            const appData = {};
-                            for (let r = 1; r < trs.length; r++) {
-                                const cells = Array.from(trs[r].querySelectorAll('td')).map(c => c.innerText.trim());
-                                if (cells.length < 4) continue;
-                                const catLower = cells[0].toLowerCase();
-                                const reserved = parseInt(cells[1].replace(/[^\d]/g, ''), 10) || 0;
-                                const applied = parseInt(cells[2].replace(/[^\d]/g, ''), 10) || 0;
-                                const times = parseFloat(cells[3].replace(/[^\d.]/g, '')) || 0;
-
-                                if (catLower.includes('10l+') || catLower.includes('bhni') || catLower.includes('big hni')) {
-                                    appData.bigHni = { reserved, applied, times };
-                                } else if (catLower.includes('2-10l') || catLower.includes('3-10l') || catLower.includes('shni') || catLower.includes('small hni')) {
-                                    appData.smallHni = { reserved, applied, times };
-                                } else if (catLower.includes('individual') || catLower.includes('retail')) {
-                                    appData.retail = { reserved, applied, times };
-                                } else if (catLower.includes('employee')) {
-                                    appData.employee = { reserved, applied, times };
-                                } else if (catLower.includes('shareholder')) {
-                                    appData.shareholder = { reserved, applied, times };
-                                }
-                            }
-                            if (Object.keys(appData).length > 0) byApplications = appData;
-                        }
-
-                        // By Amount vs By Shares
-                        if (headerCells.includes('CATEGORY') && (headerCells.includes('OFFERED') || headerCells.some(h => h.includes('OFFERED'))) && (headerCells.includes('APPLIED') || headerCells.includes('DEMAND')) && headerCells.includes('TIMES')) {
-                            const rows = [];
-                            let hasFiiOrDii = false;
-                            let isDecimalDemand = false;
-
-                            for (let r = 1; r < trs.length; r++) {
-                                const cells = Array.from(trs[r].querySelectorAll('td')).map(c => c.innerText.trim());
-                                if (cells.length < 4) continue;
-                                const cat = cells[0];
-                                const offered = parseFloat(cells[1].replace(/₹|,/g, '')) || 0;
-                                const appliedOrDemand = parseFloat(cells[2].replace(/₹|,/g, '')) || 0;
-                                const times = parseFloat(cells[3].replace(/[^\d.]/g, '')) || 0;
-
-                                if (/fii|dii|mutual|bank|dfi/i.test(cat)) hasFiiOrDii = true;
-                                if (cells[2].includes('.') && appliedOrDemand < 50000) isDecimalDemand = true;
-
-                                rows.push({ category: cat, offered, appliedOrDemand, times });
-                            }
-
-                            if (hasFiiOrDii || isDecimalDemand || headerCells.includes('DEMAND')) {
-                                byAmount = { rows };
-                            } else {
-                                byShares = { rows };
-                            }
-                        }
-                    }
-
-                    return { byShares, byApplications, byAmount, dayWise };
-                });
-
-                if (scrapedSub && (scrapedSub.byShares || scrapedSub.byApplications || scrapedSub.byAmount)) {
-                    let existingSub = ipoData.subscription || { retail: 0, hni: 0, qib: 0, total: 0 };
-
-                    // Update flat multiples
-                    if (scrapedSub.byShares?.rows?.length > 0) {
-                        const rows = scrapedSub.byShares.rows;
-                        const findRow = (keywords) => rows.find(r => keywords.some(k => r.category.toLowerCase().includes(k.toLowerCase())));
-                        const qibRow = findRow(['qib']);
-                        const hniRow = findRow(['hni', 'nii']);
-                        const retailRow = findRow(['retail', 'individual']);
-                        const totalRow = findRow(['total']);
-
-                        existingSub = {
-                            ...existingSub,
-                            retail: retailRow ? retailRow.times : (existingSub.retail || 0),
-                            hni: hniRow ? hniRow.times : (existingSub.hni || 0),
-                            qib: qibRow ? qibRow.times : (existingSub.qib || 0),
-                            total: totalRow ? totalRow.times : (existingSub.total || 0),
-                        };
-                    }
-
-                    const allotmentChances = computeAllotmentChances(scrapedSub.byApplications);
-
-                    const updatedSub = {
-                        ...existingSub,
-                        ...(scrapedSub.byApplications ? { byApplications: scrapedSub.byApplications } : {}),
-                        ...(scrapedSub.byAmount ? { byAmount: scrapedSub.byAmount } : {}),
-                        ...(scrapedSub.byShares ? { byShares: scrapedSub.byShares } : {}),
-                        ...(scrapedSub.dayWise ? { dayWise: scrapedSub.dayWise } : {}),
-                        ...(allotmentChances ? { allotmentChances } : {}),
-                        lastUpdated: nowIso,
-                        source: 'NSE/BSE'
-                    };
-
-                    const updatedData = {
-                        ...ipoData,
-                        subscription: updatedSub,
-                        updated_at: nowIso
-                    };
-
-                    const { error: upsertErr } = await supabase
-                        .from('ipos')
-                        .upsert({
-                            id: ipoRecord.id,
-                            data: updatedData,
-                            updated_at: nowIso
-                        });
-
-                    if (upsertErr) {
-                        console.error(`[LiveSub] Error saving ${name}:`, upsertErr);
-                    } else {
-                        console.log(`[LiveSub] Successfully updated live subscription for ${name} (Total: ${updatedSub.total}x, Retail: ${updatedSub.retail}x)`);
-                    }
-                } else {
-                    console.log(`[LiveSub] No new subscription tables found on page for ${name}.`);
+            for (const h of headings) {
+                const rawName = h.innerText.trim();
+                let parent = h.parentElement;
+                while (parent && parent.querySelectorAll('table').length < 2 && parent !== document.body) {
+                    parent = parent.parentElement;
                 }
-            } catch (err) {
-                console.error(`[LiveSub] Failed to scrape ${name}:`, err.message);
+                if (!parent || parent === document.body) continue;
+
+                const tables = Array.from(parent.querySelectorAll('table'));
+                let sharesTable = null;
+                let appsTable = null;
+                let amountTable = null;
+
+                for (const t of tables) {
+                    const trs = Array.from(t.querySelectorAll('tr')).map(r => Array.from(r.querySelectorAll('th, td')).map(c => c.innerText.trim()));
+                    if (trs.length < 2) continue;
+                    const hRow = trs[0].map(c => c.toUpperCase());
+
+                    if (hRow.includes('OFFERED') && hRow.includes('APPLIED') && hRow.includes('TIMES')) {
+                        const sampleVal = trs[1] && trs[1][1] ? trs[1][1] : '';
+                        if (sampleVal.includes('.') && parseFloat(sampleVal.replace(/,/g, '')) < 50000) {
+                            amountTable = trs;
+                        } else if (!sharesTable) {
+                            sharesTable = trs;
+                        }
+                    } else if (hRow.includes('RESERVED') && (hRow.includes('APPLIED') || hRow.includes('APPLICATIONS'))) {
+                        appsTable = trs;
+                    } else if (hRow.includes('DEMAND') || (hRow.includes('OFFERED') && amountTable === null)) {
+                        amountTable = trs;
+                    }
+                }
+
+                results.push({ rawName, sharesTable, appsTable, amountTable });
             }
-        }
+            return results;
+        });
+
+        return cardsData;
     } finally {
         await browser.close();
-        console.log('[LiveSub] Sync finished and browser closed.');
     }
+}
+
+async function syncLiveSubscription() {
+    console.log('[LiveSub] Starting real-time subscription synchronization...');
+    const nowIso = new Date().toISOString();
+
+    // 1. Scrape the central subscription dashboard
+    let cards = [];
+    try {
+        cards = await scrapeSubscriptionPage();
+        console.log(`[LiveSub] Scraped ${cards.length} IPO cards from subscription dashboard.`);
+    } catch (err) {
+        console.error('[LiveSub] Failed to scrape subscription dashboard:', err.message);
+        return;
+    }
+
+    if (cards.length === 0) {
+        console.log('[LiveSub] No IPO cards found on subscription page.');
+        return;
+    }
+
+    // 2. Fetch all IPOs from Supabase
+    const { data: allRows, error: fetchErr } = await supabase.from('ipos').select('id, data');
+    if (fetchErr) {
+        console.error('[LiveSub] Failed to fetch Supabase rows:', fetchErr);
+        return;
+    }
+
+    console.log(`[LiveSub] Fetched ${allRows.length} IPO records from Supabase.`);
+
+    for (const card of cards) {
+        const { rawName, sharesTable, appsTable, amountTable } = card;
+        const cleanCardName = cleanName(rawName);
+
+        // Find matching row in Supabase
+        let matchedRow = null;
+
+        // Try exact / clean match first
+        for (const row of allRows) {
+            const rowName = row.data?.basic?.name || row.data?.COMPANY || '';
+            const cleanRowName = cleanName(rowName);
+            if (cleanCardName && cleanRowName && cleanCardName === cleanRowName) {
+                matchedRow = row;
+                break;
+            }
+        }
+
+        // Fallback to fuzzy match
+        if (!matchedRow) {
+            for (const row of allRows) {
+                const rowName = row.data?.basic?.name || row.data?.COMPANY || '';
+                if (rowName && isFuzzyMatch(rawName, rowName)) {
+                    matchedRow = row;
+                    break;
+                }
+            }
+        }
+
+        // Fallback to slug match
+        if (!matchedRow) {
+            const slug = cleanCardName.replace(/\s+/g, '-');
+            for (const row of allRows) {
+                if (row.id.includes(slug)) {
+                    matchedRow = row;
+                    break;
+                }
+            }
+        }
+
+        if (!matchedRow) {
+            console.log(`[LiveSub] No Supabase match found for "${rawName}" (clean: "${cleanCardName}")`);
+            continue;
+        }
+
+        const ipoData = matchedRow.data || {};
+        const matchedName = ipoData.basic?.name || matchedRow.id;
+        console.log(`\n[LiveSub] Processing match: "${rawName}" -> "${matchedName}" (ID: ${matchedRow.id})`);
+
+        // Parse By Shares Table
+        let flatRetail = 0;
+        let flatHni = 0;
+        let flatQib = 0;
+        let flatTotal = 0;
+        let flatEmployee = null;
+        let flatShareholder = null;
+        let byShares = null;
+
+        if (sharesTable && sharesTable.length > 1) {
+            const rows = [];
+            for (let r = 1; r < sharesTable.length; r++) {
+                const cells = sharesTable[r];
+                if (cells.length < 4) continue;
+                const cat = cells[0];
+                const offered = parseCleanNum(cells[1]);
+                const appliedOrDemand = parseCleanNum(cells[2]);
+                const times = parseCleanNum(cells[3]);
+
+                const catLower = cat.toLowerCase();
+                if (catLower.includes('qib')) {
+                    flatQib = times;
+                } else if (catLower === 'hnis' || catLower === 'hni' || catLower.includes('nii')) {
+                    flatHni = times;
+                } else if (catLower.includes('retail') || catLower.includes('individual')) {
+                    flatRetail = times;
+                } else if (catLower.includes('total')) {
+                    flatTotal = times;
+                } else if (catLower.includes('employee')) {
+                    flatEmployee = times;
+                } else if (catLower.includes('shareholder')) {
+                    flatShareholder = times;
+                }
+
+                rows.push({ category: cat, offered, appliedOrDemand, times });
+            }
+            if (rows.length > 0) {
+                byShares = { rows };
+            }
+        }
+
+        // Parse By Applications Table
+        let byApplications = null;
+        if (appsTable && appsTable.length > 1) {
+            const appData = {};
+            for (let r = 1; r < appsTable.length; r++) {
+                const cells = appsTable[r];
+                if (cells.length < 4) continue;
+                const catLower = cells[0].toLowerCase();
+                const reserved = parseCleanInt(cells[1]);
+                const applied = parseCleanInt(cells[2]);
+                const times = parseCleanNum(cells[3]);
+
+                if (catLower.includes('10l+') || catLower.includes('bhni') || catLower.includes('big hni')) {
+                    appData.bigHni = { reserved, applied, times };
+                } else if (catLower.includes('2-10l') || catLower.includes('3-10l') || catLower.includes('shni') || catLower.includes('small hni') || catLower.includes('2+')) {
+                    appData.smallHni = { reserved, applied, times };
+                } else if (catLower.includes('individual') || catLower.includes('retail')) {
+                    appData.retail = { reserved, applied, times };
+                } else if (catLower.includes('employee')) {
+                    appData.employee = { reserved, applied, times };
+                } else if (catLower.includes('shareholder')) {
+                    appData.shareholder = { reserved, applied, times };
+                }
+            }
+            if (Object.keys(appData).length > 0) {
+                byApplications = appData;
+            }
+        }
+
+        // Parse By Amount Table
+        let byAmount = null;
+        if (amountTable && amountTable.length > 1) {
+            const rows = [];
+            for (let r = 1; r < amountTable.length; r++) {
+                const cells = amountTable[r];
+                if (cells.length < 4) continue;
+                const cat = cells[0];
+                const offered = parseCleanNum(cells[1]);
+                const appliedOrDemand = parseCleanNum(cells[2]);
+                const times = parseCleanNum(cells[3]);
+
+                rows.push({ category: cat, offered, appliedOrDemand, times });
+            }
+            if (rows.length > 0) {
+                byAmount = { rows };
+            }
+        }
+
+        const allotmentChances = computeAllotmentChances(byApplications);
+
+        const existingSub = ipoData.subscription || {};
+        const updatedSub = {
+            ...existingSub,
+            retail: flatRetail || existingSub.retail || 0,
+            hni: flatHni || existingSub.hni || 0,
+            qib: flatQib || existingSub.qib || 0,
+            total: flatTotal || existingSub.total || 0,
+            ...(flatEmployee !== null ? { employee: flatEmployee } : {}),
+            ...(flatShareholder !== null ? { shareholder: flatShareholder } : {}),
+            ...(byShares ? { byShares } : {}),
+            ...(byApplications ? { byApplications } : {}),
+            ...(byAmount ? { byAmount } : {}),
+            ...(allotmentChances ? { allotmentChances } : {}),
+            lastUpdated: nowIso,
+            source: 'NSE / BSE'
+        };
+
+        const updatedData = {
+            ...ipoData,
+            subscription: updatedSub,
+            updated_at: nowIso
+        };
+
+        const { error: upsertErr } = await supabase
+            .from('ipos')
+            .upsert({
+                id: matchedRow.id,
+                data: updatedData,
+                updated_at: nowIso
+            });
+
+        if (upsertErr) {
+            console.error(`[LiveSub] Error upserting ${matchedName}:`, upsertErr);
+        } else {
+            console.log(`[LiveSub] SUCCESS! Synced "${matchedName}" (Total: ${updatedSub.total}x, Retail: ${updatedSub.retail}x, HNI: ${updatedSub.hni}x, QIB: ${updatedSub.qib}x)`);
+            if (allotmentChances) {
+                console.log(`          Chances -> Retail: ${allotmentChances.retail?.text}, Small HNI: ${allotmentChances.smallHni?.text}, Big HNI: ${allotmentChances.bigHni?.text}`);
+            }
+        }
+    }
+
+    console.log('\n[LiveSub] All active IPO subscriptions synchronized successfully.');
 }
 
 if (require.main === module) {
