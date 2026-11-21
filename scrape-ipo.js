@@ -844,17 +844,19 @@ async function scrapeIPO() {
                     lastUpdated: nowIso
                 };
 
-                // Subscription: preserve existing flat values and add rich breakdown if newly scraped
-                let subscription = existingData.subscription || {
-                    retail: 0,
-                    hni: 0,
-                    qib: 0,
-                    total: 0
+                // Subscription: preserve existing live-synced values and add rich breakdown if newly scraped
+                const existingSub = existingData.subscription || {};
+                let subscription = {
+                    ...existingSub,
+                    retail: existingSub.retail || 0,
+                    hni: existingSub.hni || 0,
+                    qib: existingSub.qib || 0,
+                    total: existingSub.total || 0,
                 };
 
                 const scrapedSub = ipo.detailed_info?.subscriptionData;
                 if (scrapedSub) {
-                    // Update flat summary numbers from byShares if present
+                    // Update flat summary numbers from byShares if present, taking the higher / non-zero numbers
                     if (scrapedSub.byShares?.rows?.length > 0) {
                         const rows = scrapedSub.byShares.rows;
                         const findRow = (keywords) => rows.find(r => keywords.some(k => r.category.toLowerCase().includes(k.toLowerCase())));
@@ -862,13 +864,17 @@ async function scrapeIPO() {
                         const hniRow = findRow(['hni', 'nii']);
                         const retailRow = findRow(['retail', 'individual']);
                         const totalRow = findRow(['total']);
+                        const empRow = findRow(['employee']);
+                        const shRow = findRow(['shareholder']);
 
                         subscription = {
                             ...subscription,
-                            retail: (retailRow && retailRow.times > 0) ? retailRow.times : (subscription.retail || 0),
-                            hni: (hniRow && hniRow.times > 0) ? hniRow.times : (subscription.hni || 0),
-                            qib: (qibRow && qibRow.times > 0) ? qibRow.times : (subscription.qib || 0),
-                            total: (totalRow && totalRow.times > 0) ? totalRow.times : (subscription.total || 0),
+                            retail: (retailRow && retailRow.times > 0) ? Math.max(retailRow.times, subscription.retail || 0) : (subscription.retail || 0),
+                            hni: (hniRow && hniRow.times > 0) ? Math.max(hniRow.times, subscription.hni || 0) : (subscription.hni || 0),
+                            qib: (qibRow && qibRow.times > 0) ? Math.max(qibRow.times, subscription.qib || 0) : (subscription.qib || 0),
+                            total: (totalRow && totalRow.times > 0) ? Math.max(totalRow.times, subscription.total || 0) : (subscription.total || 0),
+                            ...(empRow && empRow.times > 0 ? { employee: empRow.times } : (subscription.employee != null ? { employee: subscription.employee } : {})),
+                            ...(shRow && shRow.times > 0 ? { shareholder: shRow.times } : (subscription.shareholder != null ? { shareholder: subscription.shareholder } : {})),
                         };
                     }
 
@@ -900,11 +906,11 @@ async function scrapeIPO() {
 
                     subscription = {
                         ...subscription,
-                        ...(scrapedSub.byApplications ? { byApplications: scrapedSub.byApplications } : {}),
-                        ...(scrapedSub.byAmount ? { byAmount: scrapedSub.byAmount } : {}),
-                        ...(scrapedSub.byShares ? { byShares: scrapedSub.byShares } : {}),
-                        ...(scrapedSub.dayWise ? { dayWise: scrapedSub.dayWise } : {}),
-                        ...(allotmentChances ? { allotmentChances } : {}),
+                        ...(scrapedSub.byApplications ? { byApplications: scrapedSub.byApplications } : (subscription.byApplications ? { byApplications: subscription.byApplications } : {})),
+                        ...(scrapedSub.byAmount ? { byAmount: scrapedSub.byAmount } : (subscription.byAmount ? { byAmount: subscription.byAmount } : {})),
+                        ...(scrapedSub.byShares ? { byShares: scrapedSub.byShares } : (subscription.byShares ? { byShares: subscription.byShares } : {})),
+                        ...(scrapedSub.dayWise ? { dayWise: scrapedSub.dayWise } : (subscription.dayWise ? { dayWise: subscription.dayWise } : {})),
+                        ...(allotmentChances ? { allotmentChances } : (subscription.allotmentChances ? { allotmentChances: subscription.allotmentChances } : {})),
                         lastUpdated: nowIso,
                         source: 'NSE/BSE'
                     };
