@@ -179,6 +179,17 @@ async function syncLiveSubscription() {
 
         const ipoData = matchedRow.data || {};
         const matchedName = ipoData.basic?.name || matchedRow.id;
+
+        // STRICT UPCOMING GUARD: Never sync live subscription into an Upcoming or Future-open IPO!
+        const metaStatus = (ipoData.meta?.status || '').toUpperCase();
+        const openStr = ipoData.dates?.open;
+        const openDate = openStr ? new Date(openStr) : null;
+        const isUpcoming = metaStatus === 'UPCOMING' || (openDate && openDate > new Date());
+        if (isUpcoming) {
+            console.log(`[LiveSub] 🛡️ Guard: Skipping Upcoming IPO "${matchedName}" (${matchedRow.id}) — Upcoming IPOs cannot have subscription!`);
+            continue;
+        }
+
         console.log(`\n[LiveSub] Processing match: "${rawName}" -> "${matchedName}" (ID: ${matchedRow.id})`);
 
         // Parse By Shares Table

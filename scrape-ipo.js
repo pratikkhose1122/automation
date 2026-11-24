@@ -628,6 +628,21 @@ async function scrapeIPO() {
                         for (const row of allSupabaseRows) {
                             const existingName = row.data?.basic?.name || row.data?.COMPANY || '';
                             if (existingName && isFuzzyMatch(companyName, existingName)) {
+                                // HISTORICAL ENTITY PROTECTION:
+                                // If the existing row is already CLOSED or LISTED or has past dates,
+                                // and the newly scraped IPO is UPCOMING, DO NOT reuse its ID!
+                                const existingStatus = (row.data?.meta?.status || '').toUpperCase();
+                                const hasListedPrice = row.data?.listing?.listedPrice > 0;
+                                const existingClose = row.data?.dates?.close;
+                                const isPastClose = existingClose && new Date(existingClose) < new Date();
+                                const isHistorical = existingStatus === 'CLOSED' || existingStatus === 'LISTED' || hasListedPrice || isPastClose;
+                                
+                                const isNewUpcoming = scrapedDates.open && new Date() < new Date(scrapedDates.open);
+                                if (isHistorical && isNewUpcoming) {
+                                    console.log(`  🛡️ Historical protection: "${companyName}" will NOT overwrite historical row ${row.id} ("${existingName}")`);
+                                    continue;
+                                }
+
                                 console.log(`  🔗 Fuzzy match: "${companyName}" ≈ "${existingName}" (reusing id: ${row.id})`);
                                 resolvedId = row.id;
                                 existingData = row.data || {};
@@ -913,6 +928,26 @@ async function scrapeIPO() {
                         ...(allotmentChances ? { allotmentChances } : (subscription.allotmentChances ? { allotmentChances: subscription.allotmentChances } : {})),
                         lastUpdated: nowIso,
                         source: 'NSE/BSE'
+                    };
+                }
+
+                // STRICT SUBSCRIPTION GUARD (Mainboard & SME):
+                // An Upcoming IPO or an IPO whose open date is in the future CANNOT have subscription figures!
+                const isUpcomingIpo = finalStatus === 'UPCOMING' || (dates.open && new Date() < new Date(dates.open));
+                if (isUpcomingIpo) {
+                    subscription = {
+                        retail: 0,
+                        hni: 0,
+                        qib: 0,
+                        total: 0,
+                        employee: null,
+                        shareholder: null,
+                        byApplications: null,
+                        byShares: null,
+                        byAmount: null,
+                        dayWise: null,
+                        allotmentChances: null,
+                        lastUpdated: nowIso
                     };
                 }
 

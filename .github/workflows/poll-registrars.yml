@@ -1,0 +1,34 @@
+name: Allotment Detection (Direct Registrar Polling)
+
+on:
+  schedule:
+    # Every 2 minutes — detects allotment release within ≤2 min of registrar going live
+    - cron: '*/2 * * * *'
+  workflow_dispatch: # Manual trigger from GitHub UI
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    # Only run during Indian market hours (UTC 11:30 - 20:00 ≈ IST 17:00 - 01:30)
+    # Allotments are always declared in the evening/night IST window
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Poll Registrar Allotment Dropdowns
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          FCM_SERVER_KEY: ${{ secrets.FCM_SERVER_KEY }}
+        run: node poll-registrars.js
+
