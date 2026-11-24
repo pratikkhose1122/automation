@@ -219,6 +219,33 @@ async function pollBigShare() {
 }
 
 // ============================================================
+// Canonical Registrar Configurations (100% verified URLs & Names)
+// ============================================================
+const REGISTRAR_CONFIG = {
+    'Link Intime': {
+        registrar: 'Link Intime',
+        registrarId: 'linkintime',
+        displayName: 'Link Intime India',
+        portalUrl: 'https://in.mpms.mufg.com/Initial_Offer/public-issues.html',
+        website: 'https://in.mpms.mufg.com/Initial_Offer',
+    },
+    'KFintech': {
+        registrar: 'KFintech',
+        registrarId: 'kfintech',
+        displayName: 'KFin Technologies',
+        portalUrl: 'https://ipostatus.kfintech.com/',
+        website: 'https://ipostatus.kfintech.com/',
+    },
+    'BigShare': {
+        registrar: 'Bigshare',
+        registrarId: 'bigshare',
+        displayName: 'Bigshare Services',
+        portalUrl: 'https://ipo.bigshareonline.com/IPO_Status.html',
+        website: 'https://ipo.bigshareonline.com/',
+    },
+};
+
+// ============================================================
 // Main: Poll all registrars, match against DB, patch Supabase
 // ============================================================
 
@@ -242,10 +269,6 @@ async function main() {
         const status = (d.meta?.status || '').toLowerCase();
         if (status !== 'closed') return false;
 
-        // allotmentLink must be empty or null
-        const link = d.details?.registrarDetails?.allotmentLink || '';
-        if (link.length > 0) return false;
-
         // Allotment date must be today or in the past
         const allotmentStr = d.dates?.allotment;
         if (!allotmentStr) return false;
@@ -255,7 +278,21 @@ async function main() {
         const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         const allotmentDayStart = new Date(allotmentDate.getFullYear(), allotmentDate.getMonth(), allotmentDate.getDate());
 
-        return allotmentDayStart <= todayStart;
+        // Must be today or in the past (up to 14 days ago)
+        const diffDays = (todayStart - allotmentDayStart) / (1000 * 60 * 60 * 24);
+        if (allotmentDayStart > todayStart || diffDays > 14) return false;
+
+        const isSME = (d.basic?.category || '').toUpperCase() === 'SME' ||
+                      (d.issue?.issueType || '').toUpperCase() === 'SME';
+
+        // For Mainboard: keep original behavior (only if allotmentLink is empty)
+        if (!isSME) {
+            const link = d.details?.registrarDetails?.allotmentLink || '';
+            return link.length === 0;
+        }
+
+        // For SME: always evaluate so we can auto-correct mismatches
+        return true;
     });
 
     if (candidates.length === 0) {
@@ -265,7 +302,8 @@ async function main() {
 
     console.log(`Found ${candidates.length} IPO(s) needing allotment detection:\n`);
     for (const c of candidates) {
-        console.log(`  - ${c.data.basic?.name || c.id} (allotment: ${c.data.dates?.allotment})`);
+        const cat = (c.data.basic?.category || c.data.issue?.issueType || 'Mainboard').toUpperCase();
+        console.log(`  - [${cat}] ${c.data.basic?.name || c.id} (allotment: ${c.data.dates?.allotment})`);
     }
     console.log('');
 
@@ -296,20 +334,68 @@ async function main() {
         const matched = allRegistrarIPOs.find(reg => isFuzzyMatch(ipoName, reg.name));
 
         if (matched) {
-            console.log(`✅ MATCH: "${ipoName}" ↔ "${matched.name}" [${matched.registrar}]`);
+            const isSME = (candidate.data.basic?.category || '').toUpperCase() === 'SME' ||
+                          (candidate.data.issue?.issueType || '').toUpperCase() === 'SME';
+
+            const config = REGISTRAR_CONFIG[matched.registrar] || {
+                registrar: matched.registrar,
+                registrarId: matched.registrar.toLowerCase().replace(/\s+/g, ''),
+                displayName: matched.registrar,
+                portalUrl: matched.portalUrl,
+                website: matched.portalUrl,
+            };
+
+            const prevReg = candidate.data.basic?.registrar || candidate.data.details?.registrarDetails?.name || 'Unknown';
+            const prevLink = candidate.data.details?.registrarDetails?.allotmentLink || '';
+            const prevId = candidate.data.details?.registrarDetails?.clientId || '';
+
+            // For SME: Auto-correct if registrar name, link, or clientId differs
+            // For Mainboard: Only update if allotmentLink is empty
+            let needsUpdate = false;
+            let isMismatch = false;
+
+            if (isSME) {
+                isMismatch = prevReg.toLowerCase() !== config.displayName.toLowerCase() &&
+                             prevReg.toLowerCase() !== config.registrar.toLowerCase();
+                needsUpdate = isMismatch || prevLink !== config.portalUrl || prevId !== matched.id;
+            } else {
+                needsUpdate = !prevLink;
+            }
+
+            if (!needsUpdate) {
+                console.log(`  ✓ "${ipoName}" is already verified [${config.displayName}]`);
+                continue;
+            }
+
+            if (isSME && isMismatch) {
+                console.log(`  🔄 [SME AUTO-CORRECT] "${ipoName}" registrar: "${prevReg}" -> "${config.displayName}"`);
+            } else {
+                console.log(`  ✅ MATCH: "${ipoName}" ↔ "${matched.name}" [${config.displayName}]`);
+            }
 
             // Patch Supabase
             const updatedData = { ...candidate.data };
+            if (!updatedData.basic) updatedData.basic = {};
             if (!updatedData.details) updatedData.details = {};
             if (!updatedData.details.registrarDetails) updatedData.details.registrarDetails = {};
+            if (!updatedData.meta) updatedData.meta = {};
 
-            updatedData.details.registrarDetails.allotmentLink = matched.portalUrl;
+            // Always update allotment link, website and clientId
+            updatedData.details.registrarDetails.allotmentLink = config.portalUrl;
+            updatedData.details.registrarDetails.website = config.website;
             updatedData.details.registrarDetails.clientId = matched.id;
-            updatedData.basic.registrar = matched.registrar;
+
+            // ONLY overwrite registrar name fields for SME IPOs
+            if (isSME) {
+                updatedData.basic.registrar = config.registrar;
+                updatedData.basic.registrarId = config.registrarId;
+                updatedData.details.registrarDetails.name = config.displayName;
+            }
 
             // Add allotment detection metadata
-            if (!updatedData.meta) updatedData.meta = {};
-            updatedData.meta.allotmentDeclaredAt = new Date().toISOString();
+            if (!updatedData.meta.allotmentDeclaredAt) {
+                updatedData.meta.allotmentDeclaredAt = new Date().toISOString();
+            }
             updatedData.meta.updatedAt = new Date().toISOString();
 
             const { error: updateError } = await supabase
@@ -320,11 +406,13 @@ async function main() {
             if (updateError) {
                 console.error(`  ❌ Failed to patch ${candidate.id}:`, updateError);
             } else {
-                console.log(`  → Patched ${candidate.id}: allotmentLink="${matched.portalUrl}", registrar="${matched.registrar}"`);
+                console.log(`  → Patched ${candidate.id}: allotmentLink="${config.portalUrl}", registrar="${updatedData.basic.registrar || matched.registrar}"`);
                 patchCount++;
 
-                // Send FCM push notification (if FCM_SERVER_KEY is configured)
-                await sendFcmNotification(ipoName, candidate.id);
+                // Send FCM push notification (if FCM_SERVER_KEY is configured and allotment wasn't already declared)
+                if (!candidate.data.meta?.allotmentDeclaredAt) {
+                    await sendFcmNotification(ipoName, candidate.id);
+                }
             }
         } else {
             console.log(`⏳ No match yet: "${ipoName}" — registrar hasn't released allotment`);
