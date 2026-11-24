@@ -125,7 +125,10 @@ async function pollKFintech() {
         }
 
         const jsUrl = `https://ipostatus.kfintech.com${scriptMatch[1]}`;
-        const jsResp = await httpGet(jsUrl, { 'Accept': '*/*' });
+        const jsResp = await httpGet(jsUrl, {
+            'Accept': '*/*',
+            'Referer': 'https://ipostatus.kfintech.com/',
+        });
         if (jsResp.status !== 200) return parseKFintechFromHtml(indexResp.body);
 
         const startMarker = "JSON.parse('[{\"clientId\":";
