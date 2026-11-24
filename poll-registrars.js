@@ -304,6 +304,7 @@ async function main() {
             if (!updatedData.details.registrarDetails) updatedData.details.registrarDetails = {};
 
             updatedData.details.registrarDetails.allotmentLink = matched.portalUrl;
+            updatedData.details.registrarDetails.clientId = matched.id;
             updatedData.basic.registrar = matched.registrar;
 
             // Add allotment detection metadata
